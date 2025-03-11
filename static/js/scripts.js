@@ -8,10 +8,11 @@ document.addEventListener("DOMContentLoaded", function () {
     const registerModal = document.getElementById("registerModal");
 
     console.log("⏳ Скрываем модальные окна...");
-    loginModal.style.display = "none";
-    registerModal.style.display = "none";
+    if (loginModal && registerModal) {
+        loginModal.style.display = "none";
+        registerModal.style.display = "none";
+    }
 });
-
 
 document.addEventListener("DOMContentLoaded", function () {
     const loginModal = document.getElementById("loginModal");
@@ -19,10 +20,6 @@ document.addEventListener("DOMContentLoaded", function () {
     const loginBtn = document.getElementById("loginBtn");
     const registerBtn = document.getElementById("registerBtn");
     const closeButtons = document.querySelectorAll(".close");
-
-    // Скрываем окна при загрузке
-    loginModal.style.display = "none";
-    registerModal.style.display = "none";
 
     function openModal(modal) {
         modal.style.display = "flex";
@@ -32,13 +29,17 @@ document.addEventListener("DOMContentLoaded", function () {
         modal.style.display = "none";
     }
 
-    loginBtn.addEventListener("click", function () {
-        openModal(loginModal);
-    });
+    if (loginBtn) {
+        loginBtn.addEventListener("click", function () {
+            openModal(loginModal);
+        });
+    }
 
-    registerBtn.addEventListener("click", function () {
-        openModal(registerModal);
-    });
+    if (registerBtn) {
+        registerBtn.addEventListener("click", function () {
+            openModal(registerModal);
+        });
+    }
 
     closeButtons.forEach(button => {
         button.addEventListener("click", function () {
@@ -53,7 +54,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
     });
 
-    // AJAX Регистрация
+    // Регистрация
     const registerForm = document.getElementById("register-form");
     if (registerForm) {
         registerForm.addEventListener("submit", function (event) {
@@ -61,20 +62,23 @@ document.addEventListener("DOMContentLoaded", function () {
 
             fetch("/register", {
                 method: "POST",
-                body: new FormData(this),
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    username: document.getElementById("new-username").value.trim(),
+                    password: document.getElementById("new-password").value.trim()
+                })
             })
-            .then(response => response.text())
-            .then(text => {
-                if (text === "success") {
-                    window.location.href = "/welcome";
-                } else {
-                    alert("Ошибка регистрации! Пользователь уже существует.");
+            .then(response => response.json())
+            .then(data => {
+                alert(data.message);
+                if (data.success) {
+                    location.reload();  // Перезагружаем страницу после успешной регистрации
                 }
             });
         });
     }
 
-    // AJAX Вход
+    // Вход
     const loginForm = document.getElementById("login-form");
     if (loginForm) {
         loginForm.addEventListener("submit", function (event) {
@@ -82,15 +86,30 @@ document.addEventListener("DOMContentLoaded", function () {
 
             fetch("/login", {
                 method: "POST",
-                body: new FormData(this),
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    username: document.getElementById("username").value.trim(),
+                    password: document.getElementById("password").value.trim()
+                })
             })
-            .then(response => response.text())
-            .then(text => {
-                if (text === "success") {
-                    window.location.href = "/dashboard";
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();  // Перезагружаем страницу после успешного входа
                 } else {
                     alert("Ошибка входа! Проверьте данные.");
                 }
+            });
+        });
+    }
+
+    // Выход
+    const logoutBtn = document.getElementById("logoutBtn");
+    if (logoutBtn) {
+        logoutBtn.addEventListener("click", function () {
+            fetch("/logout", { method: "POST" })
+            .then(() => {
+                location.reload();  // Обновляем страницу после выхода
             });
         });
     }

@@ -12,9 +12,17 @@
     <div class="navbar">
         <div class="logo">Проверка URL</div>
         <div class="auth-buttons">
-            <button class="nav-button" id="loginBtn">Войти</button>
-            <button class="nav-button" id="registerBtn">Зарегистрироваться</button>
+    {% if session.user %}
+        <div class="user-info">
+            <span>User: {{ session.user }}</span>
+            <button class="nav-button" id="logoutBtn">Выйти</button>
         </div>
+    {% else %}
+        <button class="nav-button" id="loginBtn">Войти</button>
+        <button class="nav-button" id="registerBtn">Зарегистрироваться</button>
+    {% endif %}
+</div>
+
     </div>
 
     <div class="container">
