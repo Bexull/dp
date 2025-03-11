@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Проверка URL{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+
+    <div class="navbar">
+        <div class="logo">Проверка URL</div>
+        <div class="auth-buttons">
+            <button class="nav-button" id="loginBtn">Войти</button>
+            <button class="nav-button" id="registerBtn">Зарегистрироваться</button>
+        </div>
+    </div>
+
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Модальное окно входа -->
+    <div id="loginModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Вход</h2>
+            <form>
+                <label for="loginUsername">Имя пользователя:</label>
+                <input type="text" id="loginUsername" required>
+                <br>
+                <label for="loginPassword">Пароль:</label>
+                <input type="password" id="loginPassword" required>
+                <br>
+                <button type="submit">Войти</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Модальное окно регистрации -->
+    <div id="registerModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Регистрация</h2>
+            <form>
+                <label for="registerUsername">Имя пользователя:</label>
+                <input type="text" id="registerUsername" required>
+                <br>
+                <label for="registerPassword">Пароль:</label>
+                <input type="password" id="registerPassword" required>
+                <br>
+                <button type="submit">Зарегистрироваться</button>
+            </form>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/scripts.js') }}"></script>
+</body>
+</html>
