@@ -11,8 +11,36 @@ from cryptography.hazmat.backends import default_backend
 from datetime import datetime
 import numpy as np
 from scipy.sparse import hstack
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+from werkzeug.security import check_password_hash
 
 app = Flask(__name__)
+app.secret_key = "your_secret_key"  # Нужен для хранения сессий
+
+# Фиктивная база пользователей (замени на свою)
+users = {"admin": "pbkdf2:sha256:150000$ZkG0H9…"}  # Пароли должны быть хешированы
+
+@app.route("/login", methods=["POST"])
+def login():
+    username = request.form.get("username")
+    password = request.form.get("password")
+
+    if username in users and check_password_hash(users[username], password):
+        session["user"] = username  # Сохраняем пользователя в сессии
+        return "success"  # JS обработает это и перекинет на страницу
+
+    return "error"
+
+@app.route("/dashboard")
+def dashboard():
+    if "user" not in session:
+        return redirect(url_for("index"))
+    return render_template("dashboard.html", user=session["user"])
+
+@app.route("/welcome")
+def welcome():
+    return render_template("welcome.html")
+
 
 # Загрузка модели, векторизатора и списков доменов
 model = joblib.load("url_classifier_model.pkl")

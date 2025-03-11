@@ -1,28 +1,97 @@
+console.log("✅ JS загружен!");
+
+// Проверка на лишние вызовы
 document.addEventListener("DOMContentLoaded", function () {
-    let loginModal = document.getElementById("loginModal");
-    let registerModal = document.getElementById("registerModal");
+    console.log("✅ DOM полностью загружен!");
 
-    document.getElementById("loginBtn").onclick = function () {
-        loginModal.style.display = "block";
-    };
+    const loginModal = document.getElementById("loginModal");
+    const registerModal = document.getElementById("registerModal");
 
-    document.getElementById("registerBtn").onclick = function () {
-        registerModal.style.display = "block";
-    };
+    console.log("⏳ Скрываем модальные окна...");
+    loginModal.style.display = "none";
+    registerModal.style.display = "none";
+});
 
-    document.querySelectorAll(".close").forEach(function (el) {
-        el.onclick = function () {
-            loginModal.style.display = "none";
-            registerModal.style.display = "none";
-        };
+
+document.addEventListener("DOMContentLoaded", function () {
+    const loginModal = document.getElementById("loginModal");
+    const registerModal = document.getElementById("registerModal");
+    const loginBtn = document.getElementById("loginBtn");
+    const registerBtn = document.getElementById("registerBtn");
+    const closeButtons = document.querySelectorAll(".close");
+
+    // Скрываем окна при загрузке
+    loginModal.style.display = "none";
+    registerModal.style.display = "none";
+
+    function openModal(modal) {
+        modal.style.display = "flex";
+    }
+
+    function closeModal(modal) {
+        modal.style.display = "none";
+    }
+
+    loginBtn.addEventListener("click", function () {
+        openModal(loginModal);
     });
 
-    window.onclick = function (event) {
-        if (event.target === loginModal) {
-            loginModal.style.display = "none";
+    registerBtn.addEventListener("click", function () {
+        openModal(registerModal);
+    });
+
+    closeButtons.forEach(button => {
+        button.addEventListener("click", function () {
+            closeModal(this.closest(".modal"));
+        });
+    });
+
+    // Закрытие окна при клике на затемненный фон
+    window.addEventListener("click", function (event) {
+        if (event.target.classList.contains("modal")) {
+            closeModal(event.target);
         }
-        if (event.target === registerModal) {
-            registerModal.style.display = "none";
-        }
-    };
+    });
+
+    // AJAX Регистрация
+    const registerForm = document.getElementById("register-form");
+    if (registerForm) {
+        registerForm.addEventListener("submit", function (event) {
+            event.preventDefault();
+
+            fetch("/register", {
+                method: "POST",
+                body: new FormData(this),
+            })
+            .then(response => response.text())
+            .then(text => {
+                if (text === "success") {
+                    window.location.href = "/welcome";
+                } else {
+                    alert("Ошибка регистрации! Пользователь уже существует.");
+                }
+            });
+        });
+    }
+
+    // AJAX Вход
+    const loginForm = document.getElementById("login-form");
+    if (loginForm) {
+        loginForm.addEventListener("submit", function (event) {
+            event.preventDefault();
+
+            fetch("/login", {
+                method: "POST",
+                body: new FormData(this),
+            })
+            .then(response => response.text())
+            .then(text => {
+                if (text === "success") {
+                    window.location.href = "/dashboard";
+                } else {
+                    alert("Ошибка входа! Проверьте данные.");
+                }
+            });
+        });
+    }
 });
