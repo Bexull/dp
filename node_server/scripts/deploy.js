@@ -1,18 +1,22 @@
-const { ethers } = require("hardhat");
+const hre = require("hardhat");
 
 async function main() {
-    const URLComplaint = await ethers.getContractFactory("URLComplaint"); // Загрузка контракта
-    const contract = await URLComplaint.deploy(); // Деплой контракта
+    console.log("🚀 Разворачиваем контракт...");
 
-    await contract.waitForDeployment(); // Дожидаемся завершения деплоя
+    // Получаем контракт
+    const URLComplaint = await hre.ethers.getContractFactory("URLComplaint");
 
+    // Разворачиваем контракт
+    const urlComplaint = await URLComplaint.deploy();
+    await urlComplaint.waitForDeployment(); // Ожидаем завершения деплоя
+
+    // Получаем адрес контракта
+    const contractAddress = await urlComplaint.getAddress();
     console.log(`✅ Контракт успешно развернут!`);
-    console.log(`📍 Адрес контракта: ${await contract.getAddress()}`);
+    console.log(`📍 Адрес контракта: ${contractAddress}`);
 }
 
-main()
-    .then(() => process.exit(0))
-    .catch((error) => {
-        console.error("❌ Ошибка при деплое:", error);
-        process.exit(1);
-    });
+main().catch((error) => {
+    console.error("❌ Ошибка при деплое:", error);
+    process.exitCode = 1;
+});

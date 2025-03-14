@@ -16,6 +16,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 from web3 import Web3
 import json
+from datetime import datetime, timezone
+import whois
 from contract_config import (CONTRACT_ABI, CONTRACT_ADDRESS)
 # Подключение к QuickNode
 load_dotenv()
@@ -68,6 +70,7 @@ db = client.Url_checker  # База данных
 
 users_collection = db.MINE  # Коллекция пользователей
 history_collection = db.history  # Коллекция для хранения истории проверок
+url_analysis_collection = db.url_analysis  # Коллекция для анализа URL
 
 
 # Загрузка модели
@@ -145,7 +148,7 @@ def index():
             history_collection.insert_one({
                 "username": username,
                 "url": url,
-                "timestamp": datetime.utcnow()
+                "timestamp": datetime.now(timezone.utc)
             })
 
     # Загружаем историю проверок пользователя
@@ -217,7 +220,7 @@ def report_url():
         "email": email,
         "username": username,
         "url": url,
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(timezone.utc),
         "tx_hash": tx_hash.hex()
     })
 
@@ -262,38 +265,36 @@ def check_url(url):
         domain = get_domain(url)
         base_url = f"{urlparse(url).scheme}://{domain}"
 
-        # ✅ Проверка на "белые" и "черные" списки
+        # ✅ Проверка в белом/черном списках
         if domain in safe_domains:
             return f"✅ Домен {domain} в списке безопасных (100%)"
         if domain in phishing_domains:
             return f"⚠️ Домен {domain} в списке фишинговых (0%)"
 
-        # 🔍 Проверка через VirusTotal
+        # 🔍 VirusTotal
         vt_report, vt_score = check_virustotal(url, VIRUSTOTAL_API_KEY)
 
-        # 🧠 Проверяем ИИ-модель
+        # 🧠 Проверка через ИИ
         if model and vectorizer:
             url_vectorized = vectorizer.transform([base_url])
             url_features = np.array(extract_features(base_url)).reshape(1, -1)
             X_combined = hstack([url_vectorized, url_features])
 
-            # Получаем вероятность, что сайт **безопасен**
+            # Вероятность, что сайт **безопасен**
             safe_probability = model.predict_proba(X_combined)[0][1] * 100
             safe_probability = round(safe_probability, 2)  # Округляем
 
-            # 🔎 Дополнительные проверки (SSL, HTML, Домен)
+            # 📌 Дополнительные проверки
             ssl_status = check_ssl_certificate(url)
             html_status = analyze_html_content(requests.get(url, timeout=5).text)
-            domain_status = analyze_domain(url)
+            domain_status, domain_age_factor = get_domain_age(domain)
+            external_links_status, external_links_factor = check_external_links(url)
+            redirect_status, redirect_factor = check_redirects(url)
 
-            # 🛡️ Фактор защиты (0 — плохой, 1 — нормальный)
-            protection_factor = 0
-            if "✅" in ssl_status:
-                protection_factor += 0.3
-            if "✅" in html_status:
-                protection_factor += 0.3
-            if "✅" in domain_status:
-                protection_factor += 0.3
+            # 🛡️ Итоговый защитный фактор (0–1)
+            protection_factor = (
+                domain_age_factor + external_links_factor + redirect_factor
+            ) / 3
 
             # Если VirusTotal считает сайт безопасным — минимум 90%
             if vt_report == "✅ VirusTotal: URL безопасен.":
@@ -306,20 +307,127 @@ def check_url(url):
 
             ai_result = f"🔹 Вероятность безопасности сайта: {safe_probability}%"
 
+            if safe_probability < 70:
+                add_phishing_to_blockchain(url)
+
         else:
             ai_result = "⚠️ Модель ИИ недоступна."
 
-        # 📊 Формируем итоговый отчет
+        # 📊 Итоговый отчет
         safety_report = ai_result
-        safety_report += "\n" + vt_report  # Добавляем результат VirusTotal
+        safety_report += "\n" + vt_report
         safety_report += "\n" + ssl_status
         safety_report += "\n" + html_status
         safety_report += "\n" + domain_status
+        safety_report += "\n" + external_links_status
+        safety_report += "\n" + redirect_status
+
+        # Сохранение данных о проверке URL в коллекцию url_analysis
+        url_analysis_collection.insert_one({
+            "url": url,
+            "domain": domain,
+            "ai_result" : ai_result,
+            "vt_report" : vt_report,
+            "domain_status" : domain_status,
+            "external_links_status" : external_links_status,
+            "redirect_status" : redirect_status,
+            "html_status" : html_status,
+            "ssl_status" : ssl_status,
+            "timestamp": datetime.now(timezone.utc)
+        })
 
         return safety_report
 
+
     except Exception as e:
         return f"⚠️ Ошибка обработки: {e}"
+
+
+
+
+
+def add_phishing_to_blockchain(url):
+    site_hash = hashlib.sha256(url.encode()).hexdigest()
+
+    # Получаем хеш последнего фишингового сайта
+    try:
+        last_site_hash = contract.functions.lastSiteHash().call()
+        prev_site_hash = last_site_hash if last_site_hash != "" else "0x0"
+    except Exception:
+        prev_site_hash = "0x0"
+
+    nonce = w3.eth.get_transaction_count(WALLET_ADDRESS, "pending")
+    gas_price = w3.eth.gas_price
+
+    tx = contract.functions.addPhishingSite(url, site_hash).build_transaction({
+        "from": WALLET_ADDRESS,
+        "gas": 200000,
+        "gasPrice": gas_price,
+        "nonce": nonce
+    })
+
+    signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+    w3.eth.wait_for_transaction_receipt(tx_hash)
+
+    print(f"🔴 Сайт {url} добавлен в блокчейн как фишинговый! Tx: {tx_hash.hex()}")
+    return tx_hash.hex()
+
+
+def get_domain_age(domain):
+    try:
+        domain_info = whois.whois(domain)
+        creation_date = domain_info.creation_date
+        expiration_date = domain_info.expiration_date
+
+        if isinstance(creation_date, list):
+            creation_date = creation_date[0]
+        if isinstance(expiration_date, list):
+            expiration_date = expiration_date[0]
+
+        if not creation_date or not expiration_date:
+            return "⚠️ Данные о возрасте домена недоступны.", 0.5  # Возвращаем строку и фактор риска
+
+        # Преобразуем даты в UTC
+        current_time = datetime.now(timezone.utc)
+        domain_age_days = (current_time - creation_date).days
+        days_to_expire = (expiration_date - current_time).days
+
+        # 🔹 Определяем риск по возрасту домена
+        if domain_age_days < 180:
+            return f"⚠️ Домену {domain_age_days} дней – возможно, фишинг!", 0.2  # Высокий риск
+        elif days_to_expire < 90:
+            return f"⚠️ Домен истекает через {days_to_expire} дней – подозрительно!", 0.3
+        else:
+            return f"✅ Домену {domain_age_days} дней, истекает через {days_to_expire} дней.", 1.0  # Надёжный
+
+    except Exception:
+        return "⚠️ Ошибка при проверке возраста домена.", 0.5  # Вернуть строку и средний риск
+
+
+def check_external_links(url):
+    try:
+        response = requests.get(url, timeout=5)
+        soup = BeautifulSoup(response.text, "html.parser")
+        links = soup.find_all("a", href=True)
+
+        external_links = [link["href"] for link in links if urlparse(link["href"]).netloc not in url]
+        if len(external_links) > 30:
+            return f"⚠️ Слишком много внешних ссылок ({len(external_links)}) – возможно, фишинг!", 0.2
+        return f"✅ Внешних ссылок немного ({len(external_links)}).", 1.0
+    except:
+        return "⚠️ Ошибка при проверке внешних ссылок.", 0.5
+
+
+def check_redirects(url):
+    try:
+        response = requests.get(url, timeout=5, allow_redirects=True)
+        if len(response.history) > 2:
+            return f"⚠️ Найдено {len(response.history)} перенаправления – возможно, фишинг!", 0.2
+        return "✅ Перенаправлений нет или очень мало.", 1.0
+    except:
+        return "⚠️ Ошибка при проверке перенаправлений.", 0.5
+
 
 
 def check_ssl_certificate(url):
@@ -330,9 +438,11 @@ def check_ssl_certificate(url):
             with context.wrap_socket(sock, server_hostname=hostname) as ssock:
                 cert_der = ssock.getpeercert(binary_form=True)
                 cert = x509.load_der_x509_certificate(cert_der, default_backend())
-        not_after = cert.not_valid_after
-        not_before = cert.not_valid_before
-        current_time = datetime.utcnow()
+
+        not_after = cert.not_valid_after.replace(tzinfo=timezone.utc)  # ✅ Исправлено
+        not_before = cert.not_valid_before.replace(tzinfo=timezone.utc)  # ✅ Исправлено
+        current_time = datetime.now(timezone.utc)  # ✅ Новый метод
+
         if current_time < not_before:
             return "⚠️ SSL-сертификат ещё не действителен."
         elif current_time > not_after:
@@ -341,22 +451,18 @@ def check_ssl_certificate(url):
     except Exception:
         return "⚠️ Ошибка при проверке SSL-сертификата."
 
+
+
 def analyze_html_content(html_content):
     soup = BeautifulSoup(html_content, "html.parser")
     if soup.find_all("form"):
         return "⚠️ Найдены формы. Возможен фишинг."
     return "✅ HTML-контент не содержит явных признаков фишинга."
 
-def analyze_domain(url):
-    domain = urlparse(url).hostname
-    report = []
-    if len(domain) > 30:
-        report.append("⚠️ Доменное имя слишком длинное.")
-    if re.search(r'\d', domain):
-        report.append("⚠️ Доменное имя содержит цифры.")
-    if domain.count('.') > 2:
-        report.append("⚠️ Доменное имя содержит много поддоменов.")
-    return "✅ Доменное имя выглядит нормально." if not report else "\n".join(report)
+
+import whois
+from datetime import datetime, timezone
+
 
 def check_virustotal(url, api_key):
     try:
@@ -379,6 +485,6 @@ def check_virustotal(url, api_key):
 
 
 
-
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=8080, threaded=True)
+
