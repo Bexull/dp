@@ -1,34 +1,28 @@
 console.log("✅ JS загружен!");
 
-// Проверка на лишние вызовы
+// DOM загружен
 document.addEventListener("DOMContentLoaded", function () {
     console.log("✅ DOM полностью загружен!");
 
-    const loginModal = document.getElementById("loginModal");
-    const registerModal = document.getElementById("registerModal");
-
-    console.log("⏳ Скрываем модальные окна...");
-    if (loginModal && registerModal) {
-        loginModal.style.display = "none";
-        registerModal.style.display = "none";
-    }
-});
-
-document.addEventListener("DOMContentLoaded", function () {
     const loginModal = document.getElementById("loginModal");
     const registerModal = document.getElementById("registerModal");
     const loginBtn = document.getElementById("loginBtn");
     const registerBtn = document.getElementById("registerBtn");
     const closeButtons = document.querySelectorAll(".close");
 
+    // Скрываем модальные окна при загрузке (важно!)
+    if (loginModal) loginModal.style.display = "none";
+    if (registerModal) registerModal.style.display = "none";
+
     function openModal(modal) {
-        modal.style.display = "flex";
+        if (modal) modal.style.display = "flex";
     }
 
     function closeModal(modal) {
-        modal.style.display = "none";
+        if (modal) modal.style.display = "none";
     }
 
+    // Открытие модальных окон по нажатию кнопок
     if (loginBtn) {
         loginBtn.addEventListener("click", function () {
             openModal(loginModal);
@@ -41,6 +35,7 @@ document.addEventListener("DOMContentLoaded", function () {
         });
     }
 
+    // Закрытие модальных окон (кнопка "×")
     closeButtons.forEach(button => {
         button.addEventListener("click", function () {
             closeModal(this.closest(".modal"));
@@ -60,20 +55,27 @@ document.addEventListener("DOMContentLoaded", function () {
         registerForm.addEventListener("submit", function (event) {
             event.preventDefault();
 
+            const username = document.getElementById("new-username").value.trim();
+            const email = document.getElementById("email").value.trim();
+            const password = document.getElementById("new-password").value.trim();
+
+            const usernameRegex = /^[a-zA-Z0-9]{6,}$/;
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\W).{8,}$/;
+
+            if (!usernameRegex.test(username)) return alert("Имя пользователя должно содержать минимум 6 символов (только буквы и цифры).");
+            if (!emailRegex.test(email)) return alert("Введите корректный e-mail.");
+            if (!passwordRegex.test(password)) return alert("Пароль должен содержать минимум 8 символов, одну заглавную букву, одну строчную и один спецсимвол.");
+
             fetch("/register", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    username: document.getElementById("new-username").value.trim(),
-                    password: document.getElementById("new-password").value.trim()
-                })
+                body: JSON.stringify({ username, email, password })
             })
             .then(response => response.json())
             .then(data => {
                 alert(data.message);
-                if (data.success) {
-                    location.reload();  // Перезагружаем страницу после успешной регистрации
-                }
+                if (data.success) window.location.reload();
             });
         });
     }
@@ -95,7 +97,7 @@ document.addEventListener("DOMContentLoaded", function () {
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    location.reload();  // Перезагружаем страницу после успешного входа
+                    window.location.href = "/";
                 } else {
                     alert("Ошибка входа! Проверьте данные.");
                 }
@@ -107,10 +109,42 @@ document.addEventListener("DOMContentLoaded", function () {
     const logoutBtn = document.getElementById("logoutBtn");
     if (logoutBtn) {
         logoutBtn.addEventListener("click", function () {
-            fetch("/logout", { method: "POST" })
-            .then(() => {
-                location.reload();  // Обновляем страницу после выхода
-            });
+            window.location.href = "/logout";  // Просто переходим на /logout
         });
     }
+});
+
+document.getElementById("reportForm").addEventListener("submit", function (event) {
+    event.preventDefault();
+
+    const url = document.getElementById("reportUrl").value.trim();
+
+    fetch("/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url })
+    })
+    .then(response => response.json())
+    .then(data => {
+        alert(data.message);
+    });
+});
+
+
+document.getElementById("url").addEventListener("input", function () {
+    const url = this.value.trim();
+
+    if (!url) return;
+
+    fetch("/complaints", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success && data.count >= 5) {
+            alert(`⚠️ Внимание! Этот сайт помечен как опасный (${data.count} жалоб)`);
+        }
+    });
 });

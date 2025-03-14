@@ -13,15 +13,65 @@ import numpy as np
 from scipy.sparse import hstack
 from pymongo import MongoClient
 from werkzeug.security import generate_password_hash, check_password_hash
+import os
+
+from dotenv import load_dotenv
+
+from web3 import Web3
+import json
+from contract_config import (CONTRACT_ABI, CONTRACT_ADDRESS)
+
+# Подключение к QuickNode
+load_dotenv()
+
+from dotenv import load_dotenv
+import os
+
+dotenv_path = os.path.join(os.path.dirname(__file__), "node_server", ".env")
+load_dotenv(dotenv_path)
+
+RPC_URL = os.getenv("RPC_URL")
+PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS")
+WALLET_ADDRESS = os.getenv("WALLET_ADDRESS")
+
+print(f"RPC_URL: {RPC_URL}")
+print(f"PRIVATE_KEY: {PRIVATE_KEY}")
+print(f"CONTRACT_ADDRESS: {CONTRACT_ADDRESS}")
+print(f"WALLET_ADDRESS: {WALLET_ADDRESS}")
+
+
+
+w3 = Web3(Web3.HTTPProvider(RPC_URL))
+
+if w3.is_connected():
+    print("✅ Web3 подключен к блокчейну!")
+else:
+    print("❌ Ошибка подключения к блокчейну!")
+
+with open("contract_abi.json", "r") as f:
+    contract_data = json.load(f)
+
+if isinstance(contract_data, dict) and "abi" in contract_data:
+    CONTRACT_ABI = contract_data["abi"]
+else:
+    raise ValueError("❌ Ошибка: 'contract_abi.json' не содержит ключ 'abi'. Проверьте формат файла.")
+
+
+
+
 
 app = Flask(__name__)
 app.secret_key = "your_secret_key"
 
 # Подключение к MongoDB
-uri = "mongodb+srv://Bexul:EM230267@cluster0.fzrfb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+uri = "mongodb+srv://ismailfarkhat:GameOfThrones04@cluster0.e0iti.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 client = MongoClient(uri)
-db = client.Url_checker
-users_collection = db.MINE
+db = client.Url_checker  # База данных
+
+users_collection = db.MINE  # Коллекция пользователей
+history_collection = db.history  # Коллекция для хранения истории проверок
+
 
 # Загрузка модели
 model = joblib.load("url_classifier_model.pkl")
@@ -36,16 +86,28 @@ VIRUSTOTAL_API_KEY = 'ab4c2ad3c4e97db57778947f4ad989d683e7f226d56981712926b03025
 def register():
     data = request.get_json()
     username = data.get("username").strip().lower()
+    email = data.get("email").strip().lower()
     password = data.get("password")
 
-    if users_collection.find_one({"username": {"$regex": f"^{username}$", "$options": "i"}}):
-        return jsonify({"success": False, "message": "Пользователь уже существует."})
+    if users_collection.find_one({"username": username}):
+        return jsonify({"success": False, "message": "Имя пользователя уже занято."})
+
+    if users_collection.find_one({"email": email}):
+        return jsonify({"success": False, "message": "E-mail уже зарегистрирован."})
 
     hashed_password = generate_password_hash(password)
-    users_collection.insert_one({"username": username, "password": hashed_password})
+    new_user = {
+        "username": username,
+        "email": email,
+        "password": hashed_password,
+        "registration_date": datetime.utcnow(),  # Дата регистрации
+        "last_login": None  # Последний вход пока пустой
+    }
+
+    users_collection.insert_one(new_user)
     return jsonify({"success": True, "message": "Регистрация успешна!"})
 
-# ====== Вход ======
+
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json()
@@ -55,25 +117,46 @@ def login():
     user = users_collection.find_one({"username": username})
     if user and check_password_hash(user["password"], password):
         session["user"] = username
-        return jsonify({"success": True, "username": username})  # Отправляем имя пользователя
+        session["recommendation"] = None  # Очищаем результат проверки URL
+        return jsonify({"success": True})
 
     return jsonify({"success": False, "message": "Неверные данные."})
 
+
+
 # ====== Выход ======
-@app.route("/logout", methods=["POST"])  # Теперь logout работает через POST
+@app.route("/logout", methods=["GET"])
 def logout():
     session.pop("user", None)
-    return jsonify({"success": True})  # Отправляем JSON-ответ для обработки в JS
+    return redirect(url_for("index"))
+
+
 
 # ====== Главная страница ======
+# ====== Проверка URL и сохранение истории ======
 @app.route("/", methods=["GET", "POST"])
 def index():
+    username = session.get("user")  # Получаем имя пользователя
     recommendation = None
-    username = session.get("user")  # Получаем имя пользователя из сессии
+    user_history = []
+
     if request.method == "POST":
         url = request.form["url"]
         recommendation = check_url(url)
-    return render_template("index.html", recommendation=recommendation, username=username)
+
+        if username:  # Если пользователь авторизован, сохраняем в историю
+            history_collection.insert_one({
+                "username": username,
+                "url": url,
+                "timestamp": datetime.utcnow()
+            })
+
+    # Загружаем историю проверок пользователя
+    if username:
+        user_history = [entry["url"] for entry in history_collection.find({"username": username})]
+
+    return render_template("index.html", recommendation=recommendation, username=username, history=user_history)
+
 
 
 # ====== Дашборд (защищенная страница) ======
@@ -82,6 +165,81 @@ def dashboard():
     if "user" not in session:
         return redirect(url_for("index"))
     return f"Добро пожаловать, {session['user']}!"
+
+# Подключение к контракту
+contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=CONTRACT_ABI)
+
+# ====== Жалоба на URL ======
+from bson import ObjectId
+
+@app.route("/report", methods=["POST"])
+def report_url():
+    data = request.get_json()
+    url = data.get("url")
+
+    if "user" not in session:
+        return jsonify({"success": False, "message": "Требуется авторизация!"})
+
+    username = session["user"]
+    user = users_collection.find_one({"username": username})
+
+    if not user:
+        return jsonify({"success": False, "message": "Ошибка авторизации!"})
+
+    user_id = str(user["_id"])  # ID пользователя в MongoDB
+    email = user["email"]  # Email пользователя
+
+    # 🔍 **Проверяем, жаловался ли этот пользователь**
+    existing_complaint = history_collection.find_one({"user_id": user_id, "url": url})
+    if existing_complaint:
+        return jsonify({"success": False, "message": "Вы уже отправляли жалобу на этот сайт!"})
+
+    # 🔹 Получаем nonce перед отправкой транзакции
+    nonce = w3.eth.get_transaction_count(WALLET_ADDRESS, "pending")
+
+    # 🔹 Устанавливаем цену газа вручную
+    gas_price = int(w3.eth.gas_price * 1.2)  # Увеличиваем цену газа на 20%
+
+    # 🔹 Отправляем `user_id` и `email` в контракт
+    tx = contract.functions.reportURL(url, user_id, email).build_transaction({
+        "from": WALLET_ADDRESS,
+        "gas": 200000,
+        "gasPrice": gas_price,
+        "nonce": nonce
+    })
+
+    signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+    # 🔹 Ожидаем подтверждения транзакции
+    tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)  # 5 минут
+
+    # ✅ **Сохраняем жалобу в MongoDB**
+    history_collection.insert_one({
+        "user_id": user_id,
+        "email": email,
+        "username": username,
+        "url": url,
+        "timestamp": datetime.utcnow(),
+        "tx_hash": tx_hash.hex()
+    })
+
+    print(f"⏳ Ожидание подтверждения транзакции {tx_hash.hex()}...")
+
+    pending_tx = w3.eth.get_transaction(tx_hash)
+    print(f"📌 Статус транзакции: {pending_tx}")
+
+    return jsonify({"success": True, "message": "Жалоба отправлена!", "tx_hash": tx_hash.hex()})
+
+
+
+@app.route("/complaints/<path:url>", methods=["GET"])
+def get_complaint_count(url):
+    try:
+        count = contract.functions.getComplaintCount(url).call()
+        return jsonify({"url": url, "complaints": count})
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Ошибка получения жалоб: {str(e)}"})
 
 # ====== Функции проверки URL ======
 def get_domain(url):
@@ -182,6 +340,9 @@ def check_virustotal(url, api_key):
         return "⚠️ VirusTotal: URL не найден в базе."
     except Exception:
         return "⚠️ Ошибка VirusTotal."
+
+
+
 
 if __name__ == "__main__":
     app.run(debug=True)

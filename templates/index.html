@@ -7,13 +7,32 @@
         <h1>Проверка URL</h1>
         <form method="POST" id="urlForm">
             <label for="url">Введите URL:</label>
-            <input type="text" id="url" name="url" required>
-            <button id="checkButton">Проверить</button>
-
+            <input list="history" type="text" id="url" name="url" required>
+            <datalist id="history">
+                {% for item in history %}
+                    <option value="{{ item }}">
+                {% endfor %}
+            </datalist>
+            <button id="checkButton" class="styled-button">Проверить</button>
         </form>
+
         {% if recommendation %}
         <h2>Результат:</h2>
-        <p>{{ recommendation }}</p>
+        <p id="result">{{ recommendation }}</p>
         {% endif %}
     </div>
+
+    <h3>Пожаловаться на сайт</h3>
+<form id="reportForm">
+    <input type="text" id="reportUrl" placeholder="URL сайта">
+    <button type="submit">Пожаловаться</button>
+</form>
+
 {% endblock %}
+
+{% block scripts %}
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+{% endblock %}
+
+
+
