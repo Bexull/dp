@@ -13,19 +13,16 @@ import numpy as np
 from scipy.sparse import hstack
 from pymongo import MongoClient
 from werkzeug.security import generate_password_hash, check_password_hash
-import os
-
 from dotenv import load_dotenv
-
 from web3 import Web3
 import json
 from contract_config import (CONTRACT_ABI, CONTRACT_ADDRESS)
-
 # Подключение к QuickNode
 load_dotenv()
-
 from dotenv import load_dotenv
 import os
+import hashlib
+
 
 dotenv_path = os.path.join(os.path.dirname(__file__), "node_server", ".env")
 load_dotenv(dotenv_path)
@@ -200,7 +197,7 @@ def report_url():
     # 🔹 Устанавливаем цену газа вручную
     gas_price = int(w3.eth.gas_price * 1.2)  # Увеличиваем цену газа на 20%
 
-    # 🔹 Отправляем `user_id` и `email` в контракт
+    # 🔹 Отправляем user_id и email в контракт
     tx = contract.functions.reportURL(url, user_id, email).build_transaction({
         "from": WALLET_ADDRESS,
         "gas": 200000,
@@ -265,33 +262,65 @@ def check_url(url):
         domain = get_domain(url)
         base_url = f"{urlparse(url).scheme}://{domain}"
 
+        # ✅ Проверка на "белые" и "черные" списки
         if domain in safe_domains:
-            return f"✅ Домен {domain} в списке безопасных."
+            return f"✅ Домен {domain} в списке безопасных (100%)"
         if domain in phishing_domains:
-            return f"⚠️ Домен {domain} в списке фишинговых."
+            return f"⚠️ Домен {domain} в списке фишинговых (0%)"
 
-        response = requests.get(url, timeout=5)
-        if response.status_code != 200:
-            return f"⚠️ Сайт недоступен (код {response.status_code})."
+        # 🔍 Проверка через VirusTotal
+        vt_report, vt_score = check_virustotal(url, VIRUSTOTAL_API_KEY)
 
+        # 🧠 Проверяем ИИ-модель
         if model and vectorizer:
             url_vectorized = vectorizer.transform([base_url])
             url_features = np.array(extract_features(base_url)).reshape(1, -1)
             X_combined = hstack([url_vectorized, url_features])
-            prediction = model.predict(X_combined)[0]
-            ai_result = "✅ Модель ИИ считает сайт безопасным." if prediction == 1 else "⚠️ Модель ИИ считает сайт опасным."
+
+            # Получаем вероятность, что сайт **безопасен**
+            safe_probability = model.predict_proba(X_combined)[0][1] * 100
+            safe_probability = round(safe_probability, 2)  # Округляем
+
+            # 🔎 Дополнительные проверки (SSL, HTML, Домен)
+            ssl_status = check_ssl_certificate(url)
+            html_status = analyze_html_content(requests.get(url, timeout=5).text)
+            domain_status = analyze_domain(url)
+
+            # 🛡️ Фактор защиты (0 — плохой, 1 — нормальный)
+            protection_factor = 0
+            if "✅" in ssl_status:
+                protection_factor += 0.3
+            if "✅" in html_status:
+                protection_factor += 0.3
+            if "✅" in domain_status:
+                protection_factor += 0.3
+
+            # Если VirusTotal считает сайт безопасным — минимум 90%
+            if vt_report == "✅ VirusTotal: URL безопасен.":
+                safe_probability = max(safe_probability, 90)
+
+            # Если VirusTotal считает сайт опасным, но сайт выглядит нормально
+            elif vt_score > 0:
+                adjusted_probability = safe_probability * protection_factor
+                safe_probability = max(15, adjusted_probability)
+
+            ai_result = f"🔹 Вероятность безопасности сайта: {safe_probability}%"
+
         else:
             ai_result = "⚠️ Модель ИИ недоступна."
 
+        # 📊 Формируем итоговый отчет
         safety_report = ai_result
-        safety_report += "\n" + check_ssl_certificate(url)
-        safety_report += "\n" + analyze_html_content(response.text)
-        safety_report += "\n" + analyze_domain(url)
-        safety_report += "\n" + check_virustotal(url, VIRUSTOTAL_API_KEY)
+        safety_report += "\n" + vt_report  # Добавляем результат VirusTotal
+        safety_report += "\n" + ssl_status
+        safety_report += "\n" + html_status
+        safety_report += "\n" + domain_status
 
         return safety_report
+
     except Exception as e:
         return f"⚠️ Ошибка обработки: {e}"
+
 
 def check_ssl_certificate(url):
     try:
@@ -334,12 +363,19 @@ def check_virustotal(url, api_key):
         params = {'apikey': api_key, 'resource': url}
         response = requests.get("https://www.virustotal.com/vtapi/v2/url/report", params=params)
         result = response.json()
+
         if result.get("response_code") == 1:
             positives = result.get("positives", 0)
-            return f"⚠️ VirusTotal: URL помечен как опасный ({positives} антивирусов)." if positives > 0 else "✅ VirusTotal: URL безопасен."
-        return "⚠️ VirusTotal: URL не найден в базе."
+            if positives > 0:
+                return f"⚠️ VirusTotal: URL помечен как опасный ({positives} антивирусов).", positives
+            else:
+                return "✅ VirusTotal: URL безопасен.", 0
+
+        return "⚠️ VirusTotal: URL не найден в базе.", -1
+
     except Exception:
-        return "⚠️ Ошибка VirusTotal."
+        return "⚠️ Ошибка VirusTotal.", -1
+
 
 
 
