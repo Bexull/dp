@@ -224,12 +224,26 @@ def report_url():
         "tx_hash": tx_hash.hex()
     })
 
+    # 🔥 **Получаем количество жалоб на этот сайт**
+    complaint_count = history_collection.count_documents({"url": url})
+
     print(f"⏳ Ожидание подтверждения транзакции {tx_hash.hex()}...")
 
     pending_tx = w3.eth.get_transaction(tx_hash)
     print(f"📌 Статус транзакции: {pending_tx}")
+    print(f"✅ Жалоба добавлена в БД. Всего жалоб на {url}: {complaint_count}")
 
-    return jsonify({"success": True, "message": "Жалоба отправлена!", "tx_hash": tx_hash.hex()})
+    # 🛑 **Добавляем в блокчейн, если жалоб >= 2**
+    if complaint_count >= 2:
+        print(f"⚠️ Сайт {url} получил {complaint_count} жалобы! Добавляем в блокчейн...")
+        add_phishing_to_blockchain(url)
+
+    return jsonify({
+        "success": True,
+        "message": "Жалоба отправлена!",
+        "tx_hash": tx_hash.hex(),
+        "complaints_count": complaint_count  # 👈 Добавили количество жалоб
+    })
 
 
 
@@ -307,8 +321,9 @@ def check_url(url):
 
             ai_result = f"🔹 Вероятность безопасности сайта: {safe_probability}%"
 
-            if safe_probability < 70:
-                add_phishing_to_blockchain(url)
+            # 🔥 **Проверяем количество жалоб на сайт**
+            complaint_count = history_collection.count_documents({"url": url})
+            print(f"📌 Количество жалоб на {url}: {complaint_count}")
 
         else:
             ai_result = "⚠️ Модель ИИ недоступна."
@@ -338,10 +353,8 @@ def check_url(url):
 
         return safety_report
 
-
     except Exception as e:
         return f"⚠️ Ошибка обработки: {e}"
-
 
 
 
@@ -487,4 +500,3 @@ def check_virustotal(url, api_key):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, threaded=True)
-
