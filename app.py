@@ -224,26 +224,23 @@ def report_url():
         "tx_hash": tx_hash.hex()
     })
 
-    # 🔥 **Получаем количество жалоб на этот сайт**
-    complaint_count = history_collection.count_documents({"url": url})
+    # 🔢 **Обновляем счётчик жалоб**
+    site_entry = history_collection.find_one({"url": url})
 
-    print(f"⏳ Ожидание подтверждения транзакции {tx_hash.hex()}...")
+    if site_entry:
+        new_count = site_entry.get("complaints", 0) + 1
+        history_collection.update_one({"url": url}, {"$set": {"complaints": new_count}})
+    else:
+        new_count = 1
+        history_collection.insert_one({"url": url, "complaints": new_count})
 
-    pending_tx = w3.eth.get_transaction(tx_hash)
-    print(f"📌 Статус транзакции: {pending_tx}")
-    print(f"✅ Жалоба добавлена в БД. Всего жалоб на {url}: {complaint_count}")
+    print(f"📌 Жалоб на {url}: {new_count}")
 
-    # 🛑 **Добавляем в блокчейн, если жалоб >= 2**
-    if complaint_count >= 2:
-        print(f"⚠️ Сайт {url} получил {complaint_count} жалобы! Добавляем в блокчейн...")
+    # 🚨 **Помечаем сайт как опасный, если жалоб >= 2**
+    if new_count >= 2:
         add_phishing_to_blockchain(url)
 
-    return jsonify({
-        "success": True,
-        "message": "Жалоба отправлена!",
-        "tx_hash": tx_hash.hex(),
-        "complaints_count": complaint_count  # 👈 Добавили количество жалоб
-    })
+    return jsonify({"success": True, "message": "Жалоба отправлена!", "tx_hash": tx_hash.hex(), "complaints": new_count})
 
 
 
@@ -321,9 +318,6 @@ def check_url(url):
 
             ai_result = f"🔹 Вероятность безопасности сайта: {safe_probability}%"
 
-            # 🔥 **Проверяем количество жалоб на сайт**
-            complaint_count = history_collection.count_documents({"url": url})
-            print(f"📌 Количество жалоб на {url}: {complaint_count}")
 
         else:
             ai_result = "⚠️ Модель ИИ недоступна."
@@ -353,8 +347,10 @@ def check_url(url):
 
         return safety_report
 
+
     except Exception as e:
         return f"⚠️ Ошибка обработки: {e}"
+
 
 
 
@@ -494,7 +490,6 @@ def check_virustotal(url, api_key):
 
     except Exception:
         return "⚠️ Ошибка VirusTotal.", -1
-
 
 
 
