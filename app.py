@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 import re
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
+from datetime import datetime
 import numpy as np
 from scipy.sparse import hstack
 from pymongo import MongoClient
@@ -15,11 +16,9 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 from web3 import Web3
 import json
-
-import whois
 from datetime import datetime, timezone
-
-
+import whois
+from contract_config import (CONTRACT_ABI, CONTRACT_ADDRESS)
 # Подключение к QuickNode
 load_dotenv()
 from dotenv import load_dotenv
@@ -49,8 +48,16 @@ if w3.is_connected():
 else:
     print("❌ Ошибка подключения к блокчейну!")
 
-with open("contract_abi.json", "r") as abi_file:
-    contract_abi = json.load(abi_file)
+with open("contract_abi.json", "r") as f:
+    contract_data = json.load(f)
+
+if isinstance(contract_data, dict) and "abi" in contract_data:
+    CONTRACT_ABI = contract_data["abi"]
+else:
+    raise ValueError("❌ Ошибка: 'contract_abi.json' не содержит ключ 'abi'. Проверьте формат файла.")
+
+
+
 
 
 app = Flask(__name__)
@@ -121,34 +128,36 @@ def login():
 @app.route("/logout", methods=["GET"])
 def logout():
     session.pop("user", None)
-    session.pop("recommendation", None)  # Очистка данных после выхода
     return redirect(url_for("index"))
+
 
 
 # ====== Главная страница ======
 # ====== Проверка URL и сохранение истории ======
 @app.route("/", methods=["GET", "POST"])
 def index():
-    username = session.get("user")
-    recommendation = session.pop("recommendation", None)
+    username = session.get("user")  # Получаем имя пользователя
+    recommendation = None
     user_history = []
 
     if request.method == "POST":
         url = request.form["url"]
         recommendation = check_url(url)
-        session["recommendation"] = recommendation  # Сохраняем результат в session
 
-        if username:
+        if username:  # Если пользователь авторизован, сохраняем в историю
             history_collection.insert_one({
                 "username": username,
                 "url": url,
                 "timestamp": datetime.now(timezone.utc)
             })
 
+    # Загружаем историю проверок пользователя
     if username:
         user_history = [entry["url"] for entry in history_collection.find({"username": username})]
 
     return render_template("index.html", recommendation=recommendation, username=username, history=user_history)
+
+
 
 # ====== Дашборд (защищенная страница) ======
 @app.route("/dashboard")
@@ -157,47 +166,12 @@ def dashboard():
         return redirect(url_for("index"))
     return f"Добро пожаловать, {session['user']}!"
 
-
-import hashlib
-from datetime import datetime, timezone
-from bson import ObjectId
-
-
-# 🔍 **Проверка, есть ли сайт в блокчейне**
-def is_phishing_site_in_blockchain(site_hash):
-    try:
-        site_data = contract.functions.getPhishingSite(site_hash).call()
-        print(f"🔍 Данные из блокчейна для {site_hash}: {site_data}")
-        return site_data[1] > 0  # Если есть timestamp, сайт в блокчейне
-    except Exception as e:
-        print(f"❌ Ошибка вызова getPhishingSite: {e}")
-        return False
-
-
-# 🚨 **Добавление фишингового сайта в блокчейн**
-def add_phishing_site(url, site_hash):
-    if is_phishing_site_in_blockchain(site_hash):
-        print(f"⚠️ Сайт {url} уже есть в блокчейне! Пропускаем добавление.")
-        return None
-
-    try:
-        tx = contract.functions.addPhishingSite(url, site_hash).build_transaction({
-            'from': WALLET_ADDRESS,
-            'nonce': w3.eth.get_transaction_count(WALLET_ADDRESS),
-            'gas': 500000,
-            'gasPrice': w3.to_wei('5', 'gwei')
-        })
-        receipt = send_transaction(tx)
-
-        tx_hash = receipt.transactionHash.hex()
-        print(f"🚨 Фишинговый сайт {url} добавлен! TX: {tx_hash}")
-        return tx_hash
-    except Exception as e:
-        print(f"❌ Ошибка добавления сайта {url} в блокчейн: {e}")
-        return None
-
+# Подключение к контракту
+contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=CONTRACT_ABI)
 
 # ====== Жалоба на URL ======
+from bson import ObjectId
+
 @app.route("/report", methods=["POST"])
 def report_url():
     data = request.get_json()
@@ -208,66 +182,68 @@ def report_url():
 
     username = session["user"]
     user = users_collection.find_one({"username": username})
+
     if not user:
         return jsonify({"success": False, "message": "Ошибка авторизации!"})
 
-    user_id = str(user["_id"])
-    email = user["email"]
+    user_id = str(user["_id"])  # ID пользователя в MongoDB
+    email = user["email"]  # Email пользователя
 
-    # Проверяем, жаловался ли этот пользователь
-    if history_collection.find_one({"user_id": user_id, "url": url}):
+    # 🔍 **Проверяем, жаловался ли этот пользователь**
+    existing_complaint = history_collection.find_one({"user_id": user_id, "url": url})
+    if existing_complaint:
         return jsonify({"success": False, "message": "Вы уже отправляли жалобу на этот сайт!"})
 
-    # Отправляем жалобу в контракт
-    try:
-        nonce = w3.eth.get_transaction_count(WALLET_ADDRESS, "pending")
-        gas_price = int(w3.eth.gas_price * 1.2)
+    # 🔹 Получаем nonce перед отправкой транзакции
+    nonce = w3.eth.get_transaction_count(WALLET_ADDRESS, "pending")
 
-        tx = contract.functions.reportURL(url, user_id).build_transaction({
-            "from": WALLET_ADDRESS,
-            "gas": 500000,
-            "gasPrice": gas_price,
-            "nonce": nonce
-        })
+    # 🔹 Устанавливаем цену газа вручную
+    gas_price = int(w3.eth.gas_price * 1.2)  # Увеличиваем цену газа на 20%
 
-        signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-        tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+    # 🔹 Отправляем user_id и email в контракт
+    tx = contract.functions.reportURL(url, user_id, email).build_transaction({
+        "from": WALLET_ADDRESS,
+        "gas": 200000,
+        "gasPrice": gas_price,
+        "nonce": nonce
+    })
 
-        # ✅ Сохраняем жалобу в БД
-        history_collection.insert_one({
-            "user_id": user_id,
-            "email": email,
-            "username": username,
-            "url": url,
-            "timestamp": datetime.now(timezone.utc),
-            "tx_hash": tx_hash.hex()
-        })
+    signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
 
-        complaint_count = history_collection.count_documents({"url": url})
-        print(f"✅ Жалоба добавлена в БД. Всего жалоб на {url}: {complaint_count}")
+    # 🔹 Ожидаем подтверждения транзакции
+    tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)  # 5 минут
 
-        # 🛑 **Добавляем в блокчейн, если жалоб >= 2**
-        if complaint_count >= 2:
-            site_hash = hashlib.sha256(url.encode()).hexdigest()
+    # ✅ **Сохраняем жалобу в MongoDB**
+    history_collection.insert_one({
+        "user_id": user_id,
+        "email": email,
+        "username": username,
+        "url": url,
+        "timestamp": datetime.now(timezone.utc),
+        "tx_hash": tx_hash.hex()
+    })
 
-            if not is_phishing_site_in_blockchain(site_hash):
-                blockchain_tx_hash = add_phishing_site(url, site_hash)
-                print(f"⚠️ Сайт {url} получил {complaint_count} жалобы! Добавляем в блокчейн...")
-                if not blockchain_tx_hash:
-                    print(f"❌ Ошибка при добавлении сайта {url}.")
-            else:
-                print(f"✅ Сайт {url} уже в блокчейне! Пропускаем.")
+    # 🔥 **Получаем количество жалоб на этот сайт**
+    complaint_count = history_collection.count_documents({"url": url})
 
-        return jsonify({
-            "success": True,
-            "message": "Жалоба отправлена!",
-            "tx_hash": tx_hash.hex(),
-            "mongo_complaints": complaint_count
-        })
-    except Exception as e:
-        print(f"❌ Ошибка при отправке жалобы: {e}")
-        return jsonify({"success": False, "message": "Ошибка при отправке жалобы!"})
+    print(f"⏳ Ожидание подтверждения транзакции {tx_hash.hex()}...")
+
+    pending_tx = w3.eth.get_transaction(tx_hash)
+    print(f"📌 Статус транзакции: {pending_tx}")
+    print(f"✅ Жалоба добавлена в БД. Всего жалоб на {url}: {complaint_count}")
+
+    # 🛑 **Добавляем в блокчейн, если жалоб >= 2**
+    if complaint_count >= 2:
+        print(f"⚠️ Сайт {url} получил {complaint_count} жалобы! Добавляем в блокчейн...")
+        add_phishing_to_blockchain(url)
+
+    return jsonify({
+        "success": True,
+        "message": "Жалоба отправлена!",
+        "tx_hash": tx_hash.hex(),
+        "complaints_count": complaint_count  # 👈 Добавили количество жалоб
+    })
 
 
 
@@ -278,40 +254,6 @@ def get_complaint_count(url):
         return jsonify({"url": url, "complaints": count})
     except Exception as e:
         return jsonify({"success": False, "message": f"Ошибка получения жалоб: {str(e)}"})
-
-@app.route("/phishing-sites", methods=["GET"])
-def get_phishing_sites():
-    try:
-        # Получаем последний фишинговый сайт
-        last_site_data = contract.functions.getLastPhishingSite().call()
-
-        if last_site_data[1] == 0:
-            return jsonify({"success": False, "message": "❌ В блокчейне нет фишинговых сайтов."})
-
-        sites = []
-        current_site_hash = last_site_data[2]
-
-        # Цепочка записей (последние 10)
-        for _ in range(10):
-            if current_site_hash == "0x0" or current_site_hash == "":
-                break  # Дошли до конца цепочки
-
-            site_data = contract.functions.getPhishingSite(current_site_hash).call()
-            sites.append({
-                "url": site_data[0],
-                "timestamp": datetime.utcfromtimestamp(site_data[1]).strftime('%Y-%m-%d %H:%M:%S'),
-                "site_hash": site_data[2],
-                "prev_site_hash": site_data[3]
-            })
-
-            current_site_hash = site_data[3]  # Переход к предыдущему сайту
-
-        return jsonify({"success": True, "phishing_sites": sites})
-
-    except Exception as e:
-        return jsonify({"success": False, "message": f"Ошибка при получении данных: {str(e)}"})
-
-
 
 # ====== Функции проверки URL ======
 def get_domain(url):
@@ -328,11 +270,6 @@ def extract_features(url):
         len(parsed.path),
         len(parsed.query),
     ]
-contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=contract_abi)
-def get_complaint_count(url):
-    count = contract.functions.getComplaintCount(url).call()
-    print(f"📊 Количество жалоб на {url}: {count}")
-    return count
 
 def check_url(url):
     try:
@@ -341,7 +278,6 @@ def check_url(url):
 
         domain = get_domain(url)
         base_url = f"{urlparse(url).scheme}://{domain}"
-        protocol = "HTTPS" if urlparse(url).scheme == "https" else "HTTP"
 
         # ✅ Проверка в белом/черном списках
         if domain in safe_domains:
@@ -358,57 +294,60 @@ def check_url(url):
             url_features = np.array(extract_features(base_url)).reshape(1, -1)
             X_combined = hstack([url_vectorized, url_features])
 
+            # Вероятность, что сайт **безопасен**
             safe_probability = model.predict_proba(X_combined)[0][1] * 100
-            safe_probability = round(safe_probability, 2)
+            safe_probability = round(safe_probability, 2)  # Округляем
 
+            # 📌 Дополнительные проверки
             ssl_status = check_ssl_certificate(url)
             html_status = analyze_html_content(requests.get(url, timeout=5).text)
             domain_status, domain_age_factor = get_domain_age(domain)
             external_links_status, external_links_factor = check_external_links(url)
             redirect_status, redirect_factor = check_redirects(url)
 
-            protection_factor = (domain_age_factor + external_links_factor + redirect_factor) / 3
+            # 🛡️ Итоговый защитный фактор (0–1)
+            protection_factor = (
+                domain_age_factor + external_links_factor + redirect_factor
+            ) / 3
 
+            # Если VirusTotal считает сайт безопасным — минимум 90%
             if vt_report == "✅ VirusTotal: URL безопасен.":
                 safe_probability = max(safe_probability, 90)
+
+            # Если VirusTotal считает сайт опасным, но сайт выглядит нормально
             elif vt_score > 0:
                 adjusted_probability = safe_probability * protection_factor
                 safe_probability = max(15, adjusted_probability)
 
             ai_result = f"🔹 Вероятность безопасности сайта: {safe_probability}%"
 
+            # 🔥 **Проверяем количество жалоб на сайт**
             complaint_count = history_collection.count_documents({"url": url})
-            print(f"📌 Количество проверок на {url}: {complaint_count}") # не количество жалоб, а количество проверок
+            print(f"📌 Количество жалоб на {url}: {complaint_count}")
 
         else:
             ai_result = "⚠️ Модель ИИ недоступна."
 
+        # 📊 Итоговый отчет
+        safety_report = ai_result
+        safety_report += "\n" + vt_report
+        safety_report += "\n" + ssl_status
+        safety_report += "\n" + html_status
+        safety_report += "\n" + domain_status
+        safety_report += "\n" + external_links_status
+        safety_report += "\n" + redirect_status
 
-        # 📊 Форматируем красивый вывод
-        safety_report = f"""
-        🏷️ Домен: {domain}\n                                    
-        🌐 Протокол: {protocol}\n                                    
-        🔹 Вероятность безопасности сайта: {safe_probability}%\n                                    
-        ✅ VirusTotal: {vt_report}\n                                    
-        🔒 SSL сертификаты: {ssl_status}\n                                    
-        📝 Анализ HTML-кода: {html_status}\n                                    
-        📅 Статус домена: {domain_status}\n                                    
-        🔗 Внешние ссылки: {external_links_status}\n                                    
-        🔄 Перенаправления: {redirect_status}\n                                    
-        """
-
-        # Сохранение данных о проверке URL
+        # Сохранение данных о проверке URL в коллекцию url_analysis
         url_analysis_collection.insert_one({
             "url": url,
             "domain": domain,
-            "ai_result": ai_result,
-            "vt_report": vt_report,
-            "domain_status": domain_status,
-            "external_links_status": external_links_status,
-            "redirect_status": redirect_status,
-            "html_status": html_status,
-            "ssl_status": ssl_status,
-            "protocol": protocol,
+            "ai_result" : ai_result,
+            "vt_report" : vt_report,
+            "domain_status" : domain_status,
+            "external_links_status" : external_links_status,
+            "redirect_status" : redirect_status,
+            "html_status" : html_status,
+            "ssl_status" : ssl_status,
             "timestamp": datetime.now(timezone.utc)
         })
 
@@ -416,6 +355,37 @@ def check_url(url):
 
     except Exception as e:
         return f"⚠️ Ошибка обработки: {e}"
+
+
+
+
+def add_phishing_to_blockchain(url):
+    site_hash = hashlib.sha256(url.encode()).hexdigest()
+
+    # Получаем хеш последнего фишингового сайта
+    try:
+        last_site_hash = contract.functions.lastSiteHash().call()
+        prev_site_hash = last_site_hash if last_site_hash != "" else "0x0"
+    except Exception:
+        prev_site_hash = "0x0"
+
+    nonce = w3.eth.get_transaction_count(WALLET_ADDRESS, "pending")
+    gas_price = w3.eth.gas_price
+
+    tx = contract.functions.addPhishingSite(url, site_hash).build_transaction({
+        "from": WALLET_ADDRESS,
+        "gas": 200000,
+        "gasPrice": gas_price,
+        "nonce": nonce
+    })
+
+    signed_tx = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+    w3.eth.wait_for_transaction_receipt(tx_hash)
+
+    print(f"🔴 Сайт {url} добавлен в блокчейн как фишинговый! Tx: {tx_hash.hex()}")
+    return tx_hash.hex()
+
 
 def get_domain_age(domain):
     try:
@@ -447,6 +417,7 @@ def get_domain_age(domain):
     except Exception:
         return "⚠️ Ошибка при проверке возраста домена.", 0.5  # Вернуть строку и средний риск
 
+
 def check_external_links(url):
     try:
         response = requests.get(url, timeout=5)
@@ -460,6 +431,7 @@ def check_external_links(url):
     except:
         return "⚠️ Ошибка при проверке внешних ссылок.", 0.5
 
+
 def check_redirects(url):
     try:
         response = requests.get(url, timeout=5, allow_redirects=True)
@@ -470,60 +442,40 @@ def check_redirects(url):
         return "⚠️ Ошибка при проверке перенаправлений.", 0.5
 
 
+
 def check_ssl_certificate(url):
     try:
         hostname = urlparse(url).hostname
         context = ssl.create_default_context()
-        with socket.create_connection((hostname, 443), timeout=5) as sock:
+        with socket.create_connection((hostname, 443)) as sock:
             with context.wrap_socket(sock, server_hostname=hostname) as ssock:
                 cert_der = ssock.getpeercert(binary_form=True)
                 cert = x509.load_der_x509_certificate(cert_der, default_backend())
 
-        # 🔹 Даты действия сертификата
-        not_before = cert.not_valid_before.replace(tzinfo=timezone.utc)
-        not_after = cert.not_valid_after.replace(tzinfo=timezone.utc)
-        current_time = datetime.now(timezone.utc)
+        not_after = cert.not_valid_after.replace(tzinfo=timezone.utc)  # ✅ Исправлено
+        not_before = cert.not_valid_before.replace(tzinfo=timezone.utc)  # ✅ Исправлено
+        current_time = datetime.now(timezone.utc)  # ✅ Новый метод
 
         if current_time < not_before:
             return "⚠️ SSL-сертификат ещё не действителен."
         elif current_time > not_after:
             return "⚠️ SSL-сертификат истёк."
+        return "✅ SSL-сертификат действителен."
+    except Exception:
+        return "⚠️ Ошибка при проверке SSL-сертификата."
 
-        # 🔹 Алгоритм подписи (проверка на слабые алгоритмы)
-        weak_algorithms = ["md5", "sha1"]
-        signature_algorithm = cert.signature_hash_algorithm.name.lower()
-        if signature_algorithm in weak_algorithms:
-            return f"⚠️ Используется слабый алгоритм подписи: {signature_algorithm.upper()}."
 
-        # 🔹 Проверка на самоподписанный сертификат
-        issuer = cert.issuer.rfc4514_string()
-        subject = cert.subject.rfc4514_string()
-        if issuer == subject:
-            return "⚠️ Самоподписанный сертификат! Возможен MITM-атак."
-
-        # 🔹 Проверка соответствия домена (SAN)
-        try:
-            san_extension = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
-            domain_names = san_extension.value.get_values_for_type(x509.DNSName)
-            if hostname not in domain_names:
-                return f"⚠️ Сертификат не предназначен для {hostname}! Список разрешенных: {', '.join(domain_names)}"
-        except x509.ExtensionNotFound:
-            return "⚠️ Сертификат не содержит Subject Alternative Name (SAN)!"
-
-        return f"✅ SSL-сертификат действителен. Выдан: {issuer}"
-
-    except ssl.SSLError:
-        return "⚠️ Ошибка SSL-соединения (возможно, сертификат самоподписанный)."
-    except socket.timeout:
-        return "⚠️ Тайм-аут соединения с сервером."
-    except Exception as e:
-        return f"⚠️ Ошибка при проверке SSL-сертификата: {e}"
 
 def analyze_html_content(html_content):
     soup = BeautifulSoup(html_content, "html.parser")
     if soup.find_all("form"):
         return "⚠️ Найдены формы. Возможен фишинг."
     return "✅ HTML-контент не содержит явных признаков фишинга."
+
+
+import whois
+from datetime import datetime, timezone
+
 
 def check_virustotal(url, api_key):
     try:
@@ -543,11 +495,8 @@ def check_virustotal(url, api_key):
     except Exception:
         return "⚠️ Ошибка VirusTotal.", -1
 
-def send_transaction(txn):
-    signed_txn = w3.eth.account.sign_transaction(txn, PRIVATE_KEY)
-    tx_hash = w3.eth.send_raw_transaction(signed_txn.raw_transaction)  # исправлено
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-    return receipt
+
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, threaded=True)
