@@ -1,15 +1,18 @@
 body {
     font-family: Arial, sans-serif;
-    background-color: #f4f4f4;
+    background: url('https://i.gifer.com/9gu9.gif') no-repeat center center fixed;
+    background-size: cover;
     margin: 0;
     padding: 0;
     text-align: center;
+    transition: background 0.5s ease;
 }
+
 
 .container {
     max-width: 600px;
-    margin: 20px auto;
-    background: white;
+    margin: 120px auto;
+    background: pink;
     padding: 20px;
     border-radius: 8px;
     box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
@@ -18,8 +21,8 @@ body {
 .navbar {
     display: flex;
     justify-content: space-between;
-    padding: 10px 20px;
-    background-color: #007bff;
+    padding: 20px 20px;
+    background-color: pink;
     color: white;
 }
 
@@ -168,3 +171,16 @@ body {
     align-items: center;
     gap: 5px; /* Расстояние между текстом и кнопкой */
 }
+/* Фиксированный размер кнопок */
+.nav-button,
+#checkButton,
+.modal-content form button {
+    min-width: 140px; /* Подбери подходящее значение */
+    text-align: center;
+}
+#result, pre {
+    color: white;
+}
+
+
+

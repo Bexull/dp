@@ -1,8 +1,8 @@
 import pandas as pd
 
 # Пути к файлам
-dataset_file = "C:/Users/Alpha/Desktop/url_checker/dataset.csv"
-new_urls_file = "C:/Users/Alpha/Desktop/url_checker/else/top-10000-domains"
+dataset_file = "C:/Users/Farkhat/Desktop/url_checker/dataset.csv"
+new_urls_file = "C:/Users/Farkhat/Desktop/url_checker/else/top-10000-domains"
 
 # Загружаем существующий датасет
 try:
